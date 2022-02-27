@@ -1,0 +1,22 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+mercantile = "*"
+pymbtiles = "*"
+pillow = "*"
+loguru = "*"
+black = "*"
+
+[dev-packages]
+mypy = "*"
+pytest = "*"
+vcrpy = "*"
+pytest-vcr = "*"
+pytest-mock = "*"
+black = "*"
+
+[requires]
+python_version = "3.10"
