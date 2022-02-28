@@ -1,14 +1,15 @@
-from attrs import define, field, Factory, validators
-from PIL import Image
-from collections import namedtuple
-import mercantile
-from typing import Tuple, Any, Iterable
-from pathlib import Path
+import glob
 import os
 import time
-from loguru import logger
+from collections import namedtuple
+from pathlib import Path
+from typing import Any, Iterable, Tuple
+
+import mercantile
 import requests as stock_requests
-import glob
+from attrs import Factory, define, field, validators
+from loguru import logger
+from PIL import Image
 
 Point = namedtuple("Point", ("x", "y"))
 Coords = namedtuple("Coords", ("lat", "lon"))
@@ -298,6 +299,19 @@ class SlippyTileDownloader(TileDownloader):
 
 class WmsTileDownloader(TileDownloader):
     wms_metadata: dict
+
+    def download_metadata(self, url: str) -> Any:
+        resp = self.requests.get(url, headers=self.headers, params=self.params)
+        if resp.status_code == 200:
+            return resp.content
+        elif resp.status_code == 404:
+            msg = (
+                f"Status code: {resp.status_code}, url: {url}, headers: {self.headers}."
+            )
+            logger.warning(msg)
+            return None
+        err = f"Status code: {resp.status_code}, url: {url}, headers: {self.headers}."
+        raise self.DownloadError(err)
 
     def download_tile(self, tid: TileID) -> Tile:
         z, x, y = tid
