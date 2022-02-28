@@ -2,6 +2,8 @@ from collections import namedtuple
 from typing import Any, Iterable, Tuple, Union
 
 from attrs import define, field
+from attrs.validators import instance_of
+from loguru import logger
 
 Point = namedtuple("Point", ("x", "y"))
 Pixel = namedtuple("Pixel", ("x", "y"))
@@ -9,10 +11,11 @@ Pixel = namedtuple("Pixel", ("x", "y"))
 
 @define
 class BBoxBase:
-    left: float
-    top: float
-    right: float
-    bottom: float
+    left: float = field(converter=float, validator=instance_of((float, int)))
+    top: float = field(converter=float, validator=instance_of((float, int)))
+    right: float = field(converter=float, validator=instance_of((float, int)))
+    bottom: float = field(converter=float, validator=instance_of((float, int)))
+    crs: str = field(default="EPSG:3857", validator=instance_of(str))
     point_type: namedtuple = field(default=Point, init=False, repr=False)
 
     @property
@@ -65,34 +68,39 @@ class BBoxBase:
 
 @define()
 class BBox(BBoxBase):
+    _aliases: dict = field(init=False, default=None)
+    """
+    This is a bit weird looking, but the goal is to be able to just drop arbitrary bad input on a BBox, and have it (try to) make something reasonable out of it.
+    This means a mix of mandatory args and kwargs, and an optional kwarg.
+    """
+
     def __init__(self, *args, **kwargs):
         bbox_aliases = {
-            ("maxy", "ymax", "north", "n" "t"): "top",
-            ("miny", "ymin", "south", "s" "b"): "bottom",
-            ("minx", "xmin", "west", "w" "l"): "left",
-            ("maxx", "xmin", "east", "e" "r"): "right",
+            ("maxy", "ymax", "north", "n", "t", "up", "u"): "top",
+            ("miny", "ymin", "south", "s", "b", "down", "d"): "bottom",
+            ("minx", "xmin", "west", "w", "l"): "left",
+            ("maxx", "xmax", "east", "e", "r"): "right",
+            ("srs"): "crs",
         }
-        if len(kwargs) + len(args) != 4:
-            err = f"{__name__}.__init__() got {len(kwargs) + len(args)} arguments, expecting 4."
-            raise AttributeError(err)
-        # Map our kwargs keys to the appropriate argument.
-        a = {self.lookup(kw, bbox_aliases): v for kw, v in kwargs.items()}
-        # Handle args. This currently assumes that no args and kwargs overlap.
-        b = {k: v for k, v in zip(("left", "bottom", "right", "top"), args)}
+        setattr(self, "_aliases", bbox_aliases)
+        logger.debug(f"args: {args}, kwargs: {kwargs}")
+        # This works for ASCII only, probably.
+        kwargs = {k.lower(): v for k, v in kwargs.items()}
+        # Map our kwargs keys to the appropriate argument using the aliases.
+        a = {self.lookup(kw): v for kw, v in kwargs.items()}
+        # Handle args by turning them into kwargs This currently assumes that no args and kwargs overlap.
+        b = {k: v for k, v in zip(("left", "top", "right", "bottom"), args)}
         a.update(b)
-        if len(a) != 4:
-            err = f"{__name__}.__init__() got overlapping kwargs and args, total: {len(a)}."
-            raise AttributeError(err)
-        self.__attrs_init__(
-            left=a["left"], bottom=a["bottom"], right=a["right"], top=a["top"]
-        )
+        logger.debug(f"new kwargs: {a}")
 
-    def lookup(self, k, ba):
+        self.__attrs_init__(**a)
+
+    def lookup(self, k):
         """
         Given k, return which of the 4 attrs it corresponds to.
         """
-        for a, v in ba.items():
+        for a, v in self._aliases.items():
             if k in a or k == v:
                 return v
         err = f"{k} is not a supported alias."
-        raise ValueError(err)
+        raise TypeError(err)
