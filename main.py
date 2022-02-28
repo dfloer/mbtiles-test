@@ -4,9 +4,9 @@ from pathlib import Path
 
 from loguru import logger
 
-from output import create_mbtiles, mbt_metadata
-from tiles import estimate_tiles, get_tile_ids
-from maps import simple_map
+from mbtiles import create_mbtiles, mbt_metadata
+from static_maps.tiles import estimate_tiles, get_tile_ids
+from static_maps.maps import simple_map
 
 
 def parse_command_line():

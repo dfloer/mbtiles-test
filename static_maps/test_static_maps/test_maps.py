@@ -9,8 +9,8 @@ logger.remove()
 
 
 sys.path.append(os.getcwd())
-from maps import BaseMap, MapLayer, SlippyMapLayer, SlippyTileDownloader
-from tiles import TileDownloader, TileStorage
+from static_maps.maps import BaseMap, MapLayer, SlippyMapLayer, SlippyTileDownloader
+from static_maps.tiles import TileDownloader, TileStorage
 
 
 class TestBaseMap:

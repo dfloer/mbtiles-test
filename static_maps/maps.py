@@ -7,7 +7,7 @@ from attr import field
 from attrs import Factory, define, field, validators
 from loguru import logger
 
-from tiles import (
+from static_maps.tiles import (
     BboxT,
     SlippyTileDownloader,
     Tile,

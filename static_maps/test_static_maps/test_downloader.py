@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import requests as stock_requests
 from pytest_mock import mocker
-from tiles import SlippyTileDownloader, Tile, TileDownloader, TileStorage, TileID
+from static_maps.tiles import SlippyTileDownloader, Tile, TileDownloader, TileStorage, TileID
 
 
 class TestTileDownloader:
