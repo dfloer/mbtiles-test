@@ -1,23 +1,29 @@
+from collections import namedtuple
 from pathlib import Path
-from typing import Tuple, Union
+from pprint import pprint
+from typing import Iterable, Tuple, Union
 from urllib.parse import urlparse
 from uuid import uuid4
 
 from attr import field
 from attrs import Factory, define, field, validators
+from bs4 import BeautifulSoup, element
 from loguru import logger
 
 from static_maps.tiles import (
+    Bbox,
     BboxT,
     SlippyTileDownloader,
     Tile,
     TileDownloader,
-    TileStorage,
     TileID,
+    TileStorage,
     WmsTileDownloader,
     get_tile_ids,
     tile_path,
 )
+
+from static_maps.geo import BBox, BBoxBase
 
 
 def simple_map(
@@ -32,17 +38,16 @@ def simple_map(
     **params,
 ):
     if "wms" in url.lower() or map_type.lower() == "wms":
-        raise NotImplementedError("WMS maps not supported yet.")
-        # map = BaseMap()
-        # slippy_layer = WmsMapLAyer(
-        #     bbox=bbox,
-        #     zoom_levels=zoom_levels,
-        #     url=url,
-        #     temp_path=temp_path,
-        #     cache_path=cache_path,
-        # )
-        # layer = map.add_layer(slippy_layer)
-        # return layer.get_tiles(headers=headers, fields=fields, **params)
+        map = BaseMap()
+        wms_layer = WmsMapLayer(
+            bbox=bbox,
+            zoom_levels=zoom_levels,
+            url=url,
+            temp_path=temp_path,
+            cache_path=cache_path,
+        )
+        layer = map.add_layer(wms_layer)
+        return layer.get_tiles(headers=headers, fields=fields, **params)
     else:
         map = BaseMap()
         slippy_layer = SlippyMapLayer(
@@ -76,7 +81,7 @@ class MapLayer:
     bbox: BboxT
     zoom_levels: list = field(validator=validators.instance_of(list))
     url: str
-    tile_downloader: TileDownloader = TileDownloader
+    tile_downloader: TileDownloader = TileDownloader()
     temp_path: Path = None
     cache_path: Path = None
     metadata: dict = {}
@@ -161,15 +166,16 @@ class MapLayer:
         logger.debug(path_name)
         fields["fmt"] = self.fmt
 
-        downloader = self.tile_downloader(
-            self.url, fields=fields, headers=headers, params=params
-        )
+        self.tile_downloader.url = self.url
+        self.tile_downloader.fields = fields
+        self.tile_downloader.headers = headers
+        self.tile_downloader.params = params
 
         logger.debug(f"file_storage={self._storage}")
 
         for _, tiles in tile_ids.items():
             for tile in tiles:
-                t = downloader.download_or_local(tile, self._storage)
+                t = self.tile_downloader.download_or_local(tile, self._storage)
                 if t is None:
                     continue
                 k = tile_path(t, base_path=self._storage.full_path)
@@ -187,10 +193,95 @@ class MapLayer:
 @define
 class SlippyMapLayer(MapLayer):
     _allowed_schemes = ("xyz", "tms")
-    tile_downloader: TileDownloader = SlippyTileDownloader
+    tile_downloader: TileDownloader = SlippyTileDownloader()
 
 
 @define
-class WmsMapLAyer(MapLayer):
+class WmsMapLayer(MapLayer):
     _allowed_schemes = "wms"
-    tile_downloader: TileDownloader = WmsTileDownloader
+    tile_downloader: TileDownloader = WmsTileDownloader()
+    tile_url: str = ""
+    _full_metadata: dict = Factory(dict)
+    metadata: dict = Factory(dict)
+
+    def __attrs_post_init__(self):
+        self.get_metadata()
+
+    def get_metadata(self):
+        metadata = self.tile_downloader.download_metadata(url=self.url)
+        assert metadata, "Metadata download failed, or blank response."
+        logger.info(f"size: {len(metadata)}")
+        meta = BeautifulSoup(metadata, features="xml")
+        lookups = {
+            "MaxHeight": int,
+            "MaxWidth": int,
+            ("GetMap", "Format"): str,
+            ("Style", "Name"): str,
+            "CRS": self.parse_generic_meta,
+            "BoundingBox": self.parse_bbox_meta,
+            "Title": self.parse_generic_meta,
+            ("GetMap", "DCPType", "OnlineResource"): self.parse_generic_meta,
+        }
+        res = {}
+        for lu, tr in lookups.items():
+            try:
+                if isinstance(lu, str):
+                    mfa = meta.find_all(lu)
+                    if len(mfa) == 1:
+                        res[lu] = tr(mfa[0].text)
+                    else:
+                        res[lu] = tr(mfa)
+                elif len(lu) == 2:
+                    a, b = lu
+                    r = [tr(x.text) for x in meta.find(a).select(b)]
+                    res[b] = r if len(r) > 1 else r[0]
+                elif len(lu) >= 3:
+                    a, b, c = lu
+                    abc = meta.find(a).select(c)
+                    logger.debug(abc)
+                    r = [tr(x) for x in abc]
+                    res[c] = r if len(r) > 1 else r[0]
+            except AttributeError as e:
+                logger.warning(f"Failed to get {lu}.")
+                # res[lu] = None
+        self._full_metadata = res
+
+        nice_names = (
+            "max_height",
+            "max_width",
+            "formats",
+            "styles",
+            "crss",
+            "bboxes",
+            "titles",
+            "url",
+        )
+        for n, a in zip(nice_names, lookups.keys()):
+            k = a
+            if not isinstance(a, str):
+                k = a[-1]
+            r = res[k]
+            if n == "url":
+                r = res[k][[u for u in r if "href" in u][0]]
+                self.tile_url = r
+            else:
+                self.metadata[n] = r
+
+    def parse_bbox_meta(self, m: str) -> list[BBox]:
+        """
+        Parses the given metadata hunk and returns a list of BBoxs.
+        """
+        return [BBox(**b) for b in self.parse_generic_meta(m)]
+
+    def parse_generic_meta(self, m: str) -> list:
+        """
+        For tags without attrs, parses them
+        """
+        logger.debug(f"type(m): {type(m)}")
+        if isinstance(m, element.Tag):
+            r = m.attrs
+        else:
+            a = [x.attrs for x in m]
+            r = [x.text for x in m] if a == [{}] * len(m) else a
+        logger.debug(f"m: {m} -> {r}")
+        return r

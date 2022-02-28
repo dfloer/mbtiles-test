@@ -8,7 +8,7 @@ mercantile = "*"
 pymbtiles = "*"
 pillow = "*"
 loguru = "*"
-black = "*"
+beautifulsoup4 = "*"
 
 [dev-packages]
 mypy = "*"

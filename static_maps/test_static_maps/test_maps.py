@@ -9,7 +9,13 @@ logger.remove()
 
 
 sys.path.append(os.getcwd())
-from static_maps.maps import BaseMap, MapLayer, SlippyMapLayer, SlippyTileDownloader
+from static_maps.maps import (
+    BaseMap,
+    MapLayer,
+    SlippyMapLayer,
+    SlippyTileDownloader,
+    WmsMapLayer,
+)
 from static_maps.tiles import TileDownloader, TileStorage
 
 
@@ -110,3 +116,26 @@ class TestCreateMap:
         assert len(tiles) == tile_count
         assert len(smap.layers) == len(smap.layers_meta)
         assert meta
+
+
+class TestWmsLayer:
+    @pytest.mark.skip(reason="Test needs work.")
+    @pytest.mark.vcr("new")
+    @pytest.mark.parametrize(
+        "bbox, zl, url, lazy, tile_count",
+        [
+            (
+                (-180, -85, 180, 85),
+                [0, 2, 4],
+                "https://basemap.nationalmap.gov/arcgis/services/USGSTopo/MapServer/WMSServer?request=GetCapabilities&service=WMS",
+                False,
+                273,
+            ),
+        ],
+    )
+    def test_metadata_get(self, bbox, zl, url, lazy, tile_count):
+        bmap = BaseMap()
+        layer = WmsMapLayer(bbox=bbox, zoom_levels=zl, url=url, lazy=lazy)
+        # layer.get_metadata()
+        # print(layer.metadata)
+        assert False
