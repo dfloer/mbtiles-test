@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+from attrs import define, Factory, field
 
 import mercantile
 import pytest
@@ -9,7 +10,7 @@ from attrs.exceptions import FrozenInstanceError
 sys.path.append(os.getcwd())
 
 import PIL.Image as Img
-from tiles import Bbox, Coords, Point, Tile, TileID, get_tile_ids
+from tiles import Bbox, Tile, TileID, TileStorage
 
 
 def create_blank_image(size=256, mode="RGB"):
@@ -151,7 +152,13 @@ class TestTileIDs:
         assert expected_tid == res
 
 
+class Empty:
+    pass
+
+
 class TestTile:
+    EMPTY = Empty()
+
     @pytest.mark.parametrize(
         "tile_ids, images, names, tile_size",
         [
@@ -215,6 +222,66 @@ class TestTile:
         res = Tile(test_id, img_data=bytes())
         res.flip_scheme()
         assert expected_tid == res.tid
+
+    @pytest.mark.parametrize(
+        "prop, val, exp",
+        [
+            ("z", EMPTY, 1),
+            ("x", EMPTY, 2),
+            ("y", EMPTY, 3),
+            ("s", EMPTY, "xyz"),
+            ("scheme", EMPTY, "xyz"),
+        ],
+    )
+    def test_tile_props(self, prop, val, exp):
+        test_tile = Tile(TileID(1, 2, 3), img_data=bytes())
+        print(test_tile, type(test_tile))
+        if val is self.EMPTY:
+            res = getattr(test_tile, prop)
+            assert res == exp
+            with pytest.raises(AttributeError):
+                setattr(test_tile, prop, val)
+        else:
+            setattr(test_tile, prop, val)
+            assert exp == getattr(test_tile, prop)
+
+    @pytest.mark.parametrize(
+        "l",
+        [0, 42, 12345],
+    )
+    def test_len(self, l):
+        test_tile = Tile(TileID(1, 2, 3), img_data=bytes([0] * l))
+        assert len(test_tile) == l
+
+    @pytest.mark.parametrize(
+        "imgd",
+        [
+            bytes([x for x in range(256)]),
+            bytes([0]),
+            bytes(),
+        ],
+    )
+    def test_img_data_raw(self, imgd):
+        test_tile = Tile(TileID(1, 2, 3), img_data=imgd)
+        assert test_tile.img_data == imgd
+
+
+class TestTileStorage:
+    def test_creation(self):
+        tf = TileStorage("42")
+        assert tf.name == "42"
+
+    def test_noargs_local(self):
+        tf = TileStorage("local")
+        print(tf)
+        assert tf.base_path == None
+        assert tf.path_name == Path(".")
+        assert tf.full_path == Path(".")
+        assert tf.temporary == True
+        assert tf._storage == {}
+        t = Tile(TileID(1, 2, 3), img_data=bytes([0] * 42))
+        tf.add_tile(t)
+        assert tf._storage != {}
 
 
 class TestMisc:

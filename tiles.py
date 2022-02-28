@@ -1,20 +1,14 @@
-# from dataclasses import dataclass, field
-from attrs import define, field, Factory
+from attrs import define, field, Factory, validators
 from PIL import Image
-from io import BytesIO
 from collections import namedtuple
 import mercantile
-from typing import Tuple, Union, Any, Iterable
+from typing import Tuple, Any, Iterable
 from pathlib import Path
 import os
 import time
-from pprint import pprint
 from loguru import logger
-from urllib.parse import urlparse
 import requests as stock_requests
-from queue import Queue
 import glob
-from collections import Counter
 
 Point = namedtuple("Point", ("x", "y"))
 Coords = namedtuple("Coords", ("lat", "lon"))
@@ -101,7 +95,7 @@ class TileID:
 class Tile:
     tid: TileID
     img_data: bytes = field(repr=lambda x: f"{len(x)}Bytes")
-    name: str = "tile"
+    name: str = ""
     resolution: int = 256
     fmt: str = "jpeg"
 
@@ -110,8 +104,12 @@ class Tile:
     # self.fmt = self.img.format.lower()
 
     @property
-    def scheme(self):
+    def s(self):
         return self.tid.s
+
+    @property
+    def scheme(self):
+        return self.s
 
     def save(self, path: Path = Path(".")) -> None:
         with open(path, "wb") as f:
@@ -169,6 +167,9 @@ class Tile:
         t = self.tid
         self.tid = t._swap_scheme()
 
+    def __len__(self) -> int:
+        return len(self.img_data)
+
 
 def get_tile_ids(bbox, zooms):
     logger.debug(f"bbox: {bbox}, zooms: {zooms}")
@@ -176,6 +177,12 @@ def get_tile_ids(bbox, zooms):
         z: [TileID(a.z, a.x, a.y) for a in mercantile.tiles(*bbox, z)] for z in zooms
     }
     return tiles
+
+
+def estimate_tiles(bbox, zooms):
+    tiles = get_tile_ids(bbox, zooms)
+    tile_sum = sum([len(list(x)) for x in tiles.values()])
+    return tile_sum
 
 
 def create_dirs_from_tids(tiles, base_path: Path) -> None:
@@ -206,7 +213,7 @@ def tile_path(tile: Tile, short_ext: bool = True, base_path: Path = Path(".")):
 
 @define
 class TileDownloader:
-    url: str
+    url: str = ""
     params: dict = field(default=Factory(dict))
     fields: dict = field(default=Factory(dict))
     headers: dict = field(default=Factory(dict))
@@ -214,6 +221,29 @@ class TileDownloader:
     tile_size: int = 256
     retries: int = 5
 
+    def download_tile(self, tid: TileID) -> Tile:
+        raise NotImplementedError
+
+    def download_or_local(self, tid: TileID, folder: "TileStorage" = None) -> Tile:
+        if folder:
+            res = folder.get_tile(tid)
+            if res:
+                return res
+            else:
+                res = self.download_tile(tid)
+                if res is None:
+                    return None
+                folder.add_tile(res)
+        return res
+
+    class DownloadError(Exception):
+        def __init__(self, message) -> None:
+            self.message = message
+            super().__init__(self.message)
+
+
+@define
+class SlippyTileDownloader(TileDownloader):
     def download_tile(self, tid: TileID) -> Tile:
         """
         Downloads a tile with the given tileID.
@@ -232,12 +262,10 @@ class TileDownloader:
         self.fields["z"] = z
         self.fields["x"] = x
         self.fields["y"] = y
-
         final_url = self.url.format(**self.fields)
         logger.debug(
             f"Downloading tile at {final_url}, with header: {self.headers} and params: {self.params}."
         )
-
         backoff_time = 1
         for tries in range(self.retries):
             try:
@@ -267,26 +295,17 @@ class TileDownloader:
                 backoff_time = backoff_time**2
         raise self.DownloadError(f"Failed downloading url: {final_url}.")
 
-    class DownloadError(Exception):
-        def __init__(self, message) -> None:
-            self.message = message
-            super().__init__(self.message)
 
-    def download_or_local(self, tid: TileID, folder: "TileFolder" = None) -> Tile:
-        if folder:
-            res = folder.get_tile(tid)
-            if res:
-                return res
-            else:
-                res = self.download_tile(tid)
-                if res is None:
-                    return None
-                folder.add_tile(res)
-        return res
+class WmsTileDownloader(TileDownloader):
+    wms_metadata: dict
+
+    def download_tile(self, tid: TileID) -> Tile:
+        z, x, y = tid
+        logger.debug(f"Downloading tile at z={z}, x={x}, y={y}")
 
 
 @define
-class TileFolder:
+class TileStorage:
     # ToDo: Add a method to track actually missing tiles on requests (such as tiles don't cover an area).
     name: str
     base_path: Path = None
@@ -296,7 +315,7 @@ class TileFolder:
     )
     temporary: bool = False  # ToDo: This doesn't to anything.
     _storage: dict = field(
-        init=False, repr=lambda x: f"local:{len(x) if x else 0}", default=None
+        init=False, repr=lambda x: f"local:{len(x) if x else 'disk:0'}", default=None
     )
 
     def __attrs_post_init__(self):
@@ -306,13 +325,16 @@ class TileFolder:
         else:
             self._storage = {}
             self.temporary = True
-        logger.info(f"Created TileFolder: {self}")
+        logger.debug(f"Created TileStorage: {self}")
 
     def add_tile(self, tile: Tile) -> None:
         fmt = tile.fmt
-        if self._storage:
+        logger.debug(f"storage: {self._storage}, {bool(self._storage)}.")
+        if self._storage is not None:
+            logger.debug(f"Adding tile: {tile.tid} to memory storage.")
             self._add_storage(tile)
         else:
+            logger.debug(f"Adding tile: {tile.tid} to disk storage.")
             file_path = self.full_path / tile.tid.get_pathform()
             try:
                 make_dirs(file_path)
@@ -324,7 +346,7 @@ class TileFolder:
                 raise self.StorageError(f"{file_path} saving failed, error: {e}")
 
     def get_tile(self, tile_id: TileID) -> Tile:
-        if self._storage:
+        if self._storage is not None:
             return self._get_storage(tile_id)
         else:
             file_path = self.full_path / tid_path(tile_id)
@@ -355,80 +377,3 @@ class TileFolder:
 
 def tid_path(tid: TileID) -> Path:
     return Path("").joinpath(str(tid.z), str(tid.x), str(tid.y))
-
-
-def get_tiles_slippy(
-    url: str,
-    bbox: BboxT,
-    zoom_levels: list[int],
-    headers: dict = {},
-    fields: dict = {},
-    fmt: str = "jpeg",
-    temp_path: Path = None,
-    cache_path: Path = None,
-    scheme: str = "xyz",
-    **params: dict,
-) -> Union[None, Tuple[Path, dict[int, list[int, int, str]]]]:
-    """
-    Gets the tiles for a bbox from the given url, at the specified zoom levels.
-
-    Note that only one of temp_path and cache_path should be set.
-
-    For URL parameter filling, consider this URL: "https://maps.example.com/{api_ver}/{style}/{crs}/{z}/{x}/{y}.{fmt}"
-    The parameters z, x, y, and fmt already exist in the TileID object, and fmt is an argument for this function.
-    This means that fields would need to be {"api_ver": api_version, "style": map_style, "crs" = coordindate_reference_system}
-    Args:
-        url (str): Url of the slippy mays server. Any parameters in {} will be filled in as needed, from the Tile or from the fields attribute.
-        bbox (BboxT): Bounding box of the area to get tiles for.
-        headers (dict, optional): Optional HTTP headers to pass to requests, for exmaple an "X-Api-Key" header for an API key. Defaults to {}.
-        fields (dict, optional): Optional fields to fill in the url with. Defaults to {}.
-        zoom_levels (list[int]): List of zoom levels to get tiles for. This can be discontinuous.
-        tile_format (str, optional): Type of image to download. Presently "jpeg" and "png" are supported/tested. Defaults to "jpeg".
-        temp_dir (Path, optional): Path to store temporary files in. This folder is wiped after each run. Blank means store everything in memory, which could be bad. Defaults to None.
-        cache_dir (Path, optional): Path to store cached files in. Blank means store everything in memory, which could be bad.. Defaults to None.
-    Returns:
-        None: If an mbtiles file is written, nothing is returned.
-        Fixme: ----> Tuple[Path, dict[int, TileID]]: If a temp_dir is set, this will be the path to the downloaded tiles there. Also included are the tile_ids
-    """
-    output_meta = {}
-    tile_ids = get_tile_ids(bbox, zoom_levels)
-    t = list(tile_ids.values())
-    logger.info(len(t))
-
-    url_pieces = urlparse(url)
-    output_meta["map_sourse"] = url_pieces.netloc
-    output_meta["format"] = fmt
-
-    path_name = Path(url_pieces.netloc.replace(".", "_"))
-
-    logger.info(path_name)
-    fields["fmt"] = fmt
-
-    downloader = TileDownloader(url, fields=fields, headers=headers, params=params)
-
-    if temp_path is not None and cache_path is not None:
-        msg = f"temp_path={temp_path} and cache_path={cache_path} can't be set at the same time."
-        assert False, msg
-    elif temp_path is not None:
-        file_storage = TileFolder("temporary_storage", temp_path, path_name, True)
-    elif cache_path is not None:
-        file_storage = TileFolder("cache_storage", cache_path, path_name, False)
-    else:
-        file_storage = TileFolder("local_storage", None)
-
-    logger.debug(f"file_storage={file_storage}")
-
-    tile_paths = {}
-    for _, tiles in tile_ids.items():
-        for tile in tiles:
-            t = downloader.download_or_local(tile, file_storage)
-            if t is None:
-                continue
-            k = tile_path(t, base_path=file_storage.full_path)
-            tile_paths[k] = t
-    # ToDo: tile_paths has all of the tiles in it. This is a recipe to run out of memory.
-
-    if file_storage.name == "local_storage":
-        raise NotImplementedError("In memory storage of tiles not supported.")
-    return tile_paths, output_meta
-    # logger.debug(pprint(tile_paths))

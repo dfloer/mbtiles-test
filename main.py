@@ -1,11 +1,12 @@
 import argparse
-from urllib.parse import scheme_chars
-from loguru import logger
+import sys
 from pathlib import Path
 
-from output import create_mbtiles, mbt_metadata
+from loguru import logger
 
-from tiles import get_tiles_slippy, get_tile_ids
+from output import create_mbtiles, mbt_metadata
+from tiles import estimate_tiles, get_tile_ids
+from maps import simple_map
 
 
 def parse_command_line():
@@ -72,7 +73,7 @@ def parse_command_line():
 
 def estimate_tiles(bbox, zooms):
     tiles = get_tile_ids(bbox, zooms)
-    tile_sum = sum([len(list(x)) for x in tiles])
+    tile_sum = sum([len(list(x)) for x in tiles.values()])
     return tile_sum
 
 
@@ -82,32 +83,22 @@ if __name__ == "__main__":
     output = Path(options.output)
     url = options.url
     zoom_levels = options.zoom_levels
+    debug = options.debug
+
+    if debug:
+        logger.remove()
+        logger.add(sys.stderr, level="DEBUG")
+    else:
+        logger.remove()
+        logger.add(sys.stderr, level="INFO")
 
     # td = Path("./temp_test")
     td = None
     cd = Path("./cache_test")
     # cd = None
 
-    tile_files, tiles_meta = get_tiles_slippy(
-        url=url,
-        bbox=bbox,
-        zoom_levels=zoom_levels,
-        headers={},
-        fields={},
-        temp_path=td,
-        cache_path=cd,
-    )
+    print(f"Estimated tile cound: {estimate_tiles(bbox, zoom_levels)}.")
 
+    tile_files, tiles_meta = simple_map(bbox, zoom_levels, url, td, cd)
     metadata = mbt_metadata(other_data=tiles_meta, bounds=bbox)
-
     create_mbtiles(tile_files, metadata, output_path=output)
-
-    # if options.debug:
-    #     logging.basicConfig(level=logging.DEBUG)
-    # else:
-    #     logging.basicConfig(level=logging.INFO)
-
-    # if "wms" in url.lower():
-    #     get_tiles_wms(url, bbox, zoom_levels, output)
-    # else:
-    #     get_tiles_xyz(url, bbox, zoom_levels, output)
