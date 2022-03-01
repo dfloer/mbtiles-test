@@ -97,7 +97,7 @@ if __name__ == "__main__":
     cd = Path("./cache_test")
     # cd = None
 
-    print(f"Estimated tile cound: {estimate_tiles(bbox, zoom_levels)}.")
+    print(f"Estimated tile count: {estimate_tiles(bbox, zoom_levels)}.")
 
     tile_files, tiles_meta = simple_map(bbox, zoom_levels, url, td, cd)
     metadata = mbt_metadata(other_data=tiles_meta, bounds=bbox)
