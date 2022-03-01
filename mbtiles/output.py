@@ -59,8 +59,8 @@ def mbt_metadata(other_data: dict = {}, **kwargs):
     meta["bounds"] = bounds
     meta["scheme"] = get_from_two("scheme", other_data, kwargs, "tms")
     meta["created_by"] = "github.com/dfloer/mbtiles-test"
-    meta["map_source"] = get_from_two("map_source",other_data, kwargs, "")
-    meta["map_license"] = get_from_two("map_license",other_data, kwargs, "")
+    meta["map_source"] = get_from_two("map_source", other_data, kwargs, "")
+    meta["map_license"] = get_from_two("map_license", other_data, kwargs, "")
     meta["creation_date"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     logger.debug(f"{meta}")
     return meta
