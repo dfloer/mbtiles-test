@@ -11,7 +11,6 @@ from bs4 import BeautifulSoup, element
 from loguru import logger
 
 from static_maps.tiles import (
-    Bbox,
     BboxT,
     SlippyTileDownloader,
     Tile,
@@ -23,7 +22,7 @@ from static_maps.tiles import (
     tile_path,
 )
 
-from static_maps.geo import BBox, BBoxBase
+from static_maps.geo import BBox
 
 
 def simple_map(
@@ -266,6 +265,10 @@ class WmsMapLayer(MapLayer):
                 self.tile_url = r
             else:
                 self.metadata[n] = r
+
+        # Need a better way to pass this to the downloader.
+        self.tile_downloader.metadata = {k: v for k, v in self.metadata.items()}
+        self.tile_downloader.metadata["tile_url"] = self.tile_url
 
     def parse_bbox_meta(self, m: str) -> list[BBox]:
         """

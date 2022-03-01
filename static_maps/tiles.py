@@ -10,12 +10,11 @@ import requests as stock_requests
 from attrs import Factory, define, field, validators
 from loguru import logger
 from PIL import Image
-
-Point = namedtuple("Point", ("x", "y"))
-Coords = namedtuple("Coords", ("lat", "lon"))
-Bbox = namedtuple("Bbox", ("left", "bottom", "right", "top"))
+from urllib.parse import urlencode
 
 BboxT = tuple[float, float, float, float]
+
+from static_maps.geo import BBox, Point, tid_to_xy_bbox
 
 
 @define(frozen=True)
@@ -137,7 +136,8 @@ class Tile:
         """
         Get a mercantile bounding box for tile.
         """
-        mt = mercantile.bounds(self.asmercantile)
+        l, b, r, t = mercantile.bounds(self.asmercantile)
+        mt = BBox(l, t, r, b)
         return mt
 
     @property
@@ -213,17 +213,96 @@ def tile_path(tile: Tile, short_ext: bool = True, base_path: Path = Path(".")):
 
 
 @define
-class TileDownloader:
+class Downloader:
     url: str = ""
     params: dict = field(default=Factory(dict))
     fields: dict = field(default=Factory(dict))
     headers: dict = field(default=Factory(dict))
     requests: Any = stock_requests
-    tile_size: int = 256
     retries: int = 5
+    backoff_time: int = 1
 
     def download_tile(self, tid: TileID) -> Tile:
         raise NotImplementedError
+
+    class DownloadError(Exception):
+        def __init__(self, message) -> None:
+            self.message = message
+            super().__init__(self.message)
+
+    def download(
+        self,
+        url: str,
+        acceptable_status: list = list([]),
+        params_override: dict = {},
+        fields_override: dict = {},
+        headers_override: dict = {},
+        params_extra: dict = {},
+        fields_extra: dict = {},
+        headers_extra: dict = {},
+    ) -> "requests.Response.content":
+        """
+        Raw downloader. Uses any parameters, fields and headers set on this object.
+        the *_extra arguments all replace the existing entries, if they exist. If override is set, *_extra arguments are ignored.
+        Args:
+            url (str): URL to download from.
+            acceptable_status (list, optional): These error codes are treated as acceptable, and any content is returned as is. Defaults to [].
+            params_override (dict, optional): If set, fully replace this object's params. Defaults to {}.
+            fields_override (dict, optional): If set, fully replace this object's fields. Defaults to {}.
+            headers_override (dict, optional): If set, fully replace this object's headers. Defaults to {}.
+            params_extra (dict, optional): If set, add to this object's params. Defaults to {}.
+            fields_extra (dict, optional): If set, add to this object's fields. Defaults to {}.
+            headers_extra (dict, optional): If set, add this object's headers. Defaults to {}.
+
+        Raises:
+            self.DownloadError: If the status code is not 200 or in acceptable_status.
+            self.DownloadError: If the connection failed and retries were exceeded.
+        Returns:
+            requests.Response.content: Content of the response.
+        """
+        params = self._extra_override("params", params_override, params_extra)
+        fields = self._extra_override("fields", fields_override, fields_extra)
+        headers = self._extra_override("headers", headers_override, headers_extra)
+        logger.debug(f"Final: p: {params}, f: {fields}, h: {headers}")
+        final_url = url.format(**fields)
+        backoff_time = self.backoff_time
+        for tries in range(self.retries):
+            try:
+                resp = self.requests.get(final_url, headers=headers, params=params)
+                if resp.status_code == 200:
+                    return resp.content
+                elif resp.status_code in acceptable_status:
+                    logger.debug(
+                        f"Status code: {resp.status_code}, url: {final_url}, headers: {headers}."
+                    )
+                    return resp.content
+                raise self.DownloadError(
+                    f"Status code: {resp.status_code}, url: {final_url}, headers: {headers}."
+                )
+            except self.requests.exceptions.ConnectionError as e:
+                logger.debug(
+                    f"ConnectionError: {e}, url: {final_url}, headers: {headers}. Tries: {tries}, backoff: {backoff_time}s."
+                )
+                time.sleep(backoff_time)
+                # Exponential backoff.
+                backoff_time = backoff_time**2
+        raise self.DownloadError(
+            f"Failed downloading url: [{final_url}] after {self.retries}."
+        )
+
+    def _extra_override(self, name: str, override: dict, extra: dict) -> None:
+        """
+        Handles replacing/adding *_override and *_extra values.
+        """
+        self_v = getattr(self, name)
+        self_v.update(extra) if extra else self_v
+        d = override if override else self_v
+        return d
+
+
+@define
+class TileDownloader(Downloader):
+    tile_size: int = 256
 
     def download_or_local(self, tid: TileID, folder: "TileStorage" = None) -> Tile:
         if folder:
@@ -234,88 +313,123 @@ class TileDownloader:
                 res = self.download_tile(tid)
                 if res is None:
                     return None
-                folder.add_tile(res)
-        return res
+                t = Tile(tid, res)
+                folder.add_tile(t)
+        return t
 
-    class DownloadError(Exception):
-        def __init__(self, message) -> None:
-            self.message = message
-            super().__init__(self.message)
+    def download_tile(
+        self,
+        final_url: str,
+        acceptable_status: list = list([]),
+        **kwargs,
+    ):
+        return super().download(final_url, acceptable_status, **kwargs)
 
 
 @define
 class SlippyTileDownloader(TileDownloader):
+    crs: str = "EPSG:4326"
+
     def download_tile(self, tid: TileID) -> Tile:
         """
         Downloads a tile with the given tileID.
-        Args:
-            tid (TileID): TileID of the tile to download.
-
-        Raises:
-            self.DownloadError: _description_
-            self.DownloadError: _description_
-
-        Returns:
-            Tile: _description_
         """
+        logger.debug(
+            f"Downloading tile at {self.url}, with header: {self.headers} and params: {self.params}."
+        )
         z, x, y = tid
         logger.debug(f"Downloading tile at z={z}, x={x}, y={y}")
-        self.fields["z"] = z
-        self.fields["x"] = x
-        self.fields["y"] = y
-        final_url = self.url.format(**self.fields)
-        logger.debug(
-            f"Downloading tile at {final_url}, with header: {self.headers} and params: {self.params}."
-        )
-        backoff_time = 1
-        for tries in range(self.retries):
-            try:
-                resp = self.requests.get(
-                    final_url, headers=self.headers, params=self.params
-                )
-                if resp.status_code == 200:
-                    t = Tile(
-                        tid=tid, img_data=resp.content, fmt=self.fields.get("fmt", "")
-                    )
-                    return t
-                elif resp.status_code == 404:
-                    logger.warning(
-                        f"Status code: {resp.status_code}, url: {final_url}, headers: {self.headers}."
-                    )
-                    return None
-                raise self.DownloadError(
-                    f"Status code: {resp.status_code}, url: {final_url}, headers: {self.headers}."
-                )
+        fe = {"z": z, "x": x, "y": y}
+        resp = super().download_tile(self.url, fields_extra=fe)
+        if resp is None:
+            return None
 
-            except self.requests.exceptions.ConnectionError as e:
-                logger.debug(
-                    f"url: {final_url}, headers: {self.headers}. Tries: {tries}, backoff: {backoff_time}s."
-                )
-                time.sleep(backoff_time)
-                # Exponential backoff.
-                backoff_time = backoff_time**2
-        raise self.DownloadError(f"Failed downloading url: {final_url}.")
+        # Preserve the default Tile format, rather than guess.
+        f = self.fields.get("fmt", None)
+        fmt = {"fmt": f} if f is not None else {}
+        return Tile(tid=tid, img_data=resp, **fmt)
 
 
+@define
 class WmsTileDownloader(TileDownloader):
-    wms_metadata: dict
+    crs: str = "EPSG:3857"
+    tile_width: int = 256
+    tile_height: int = 256
+    metadata: dict = field(default=dict, init=False, repr=False)
 
     def download_metadata(self, url: str) -> Any:
-        resp = self.requests.get(url, headers=self.headers, params=self.params)
-        if resp.status_code == 200:
-            return resp.content
-        elif resp.status_code == 404:
-            msg = (
-                f"Status code: {resp.status_code}, url: {url}, headers: {self.headers}."
-            )
-            logger.warning(msg)
-            return None
-        err = f"Status code: {resp.status_code}, url: {url}, headers: {self.headers}."
-        raise self.DownloadError(err)
+        """Convenience function."""
+        return self.download(url)
 
     def download_tile(self, tid: TileID) -> Tile:
+        # These are static* (*make sure are actually static).
+        get_params = {
+            # "request": "GetCapabilities",  # ???
+            "service": "WMS",
+            "request": "GetMap",
+        }
+
+        # k is the param key to lookup, value is the default if self.params[k] has nothing.
+        default_params = {
+            "version": "1.1.1",
+            "styles": "default",
+            "format": "image/jpeg",
+            "scheme": "wmts",
+            "transparent": True,
+            "layers": 0,
+        }
+        req_params = self.params
+
+        req_params["width"] = self.tile_width
+        req_params["height"] = self.tile_height
+
+        req_params.update(get_params)
+        defaults_set = {k: req_params.get(k, v) for k, v in default_params.items()}
+        req_params.update(defaults_set)
+
+        # Should these be included as defaults? Probably not, these should be added somewhere higher.
+        required = ["bbox", "width", "height"]
+
+        crs_name = "crs"  # renamed in v1.3.0
+        if req_params["version"] == "1.1.1":
+            crs_name = "srs"
+        required += [crs_name]
+
+        xy_bbox1 = tid_to_xy_bbox(tid)
+        if req_params["scheme"] == "wmts":
+            logger.debug("WMTS: swapping tid scheme.")
+            tid = tid._swap_scheme()
+
+        # Feels like the correct way to do this would be to pass an empty Tile to the downloader, in hindsight.
+        xy_bbox = tid_to_xy_bbox(tid)
+        logger.info(xy_bbox)
+        logger.info(xy_bbox1)
+
+        req_params["bbox"] = xy_bbox
+        req_params["srs"] = xy_bbox.crs
+
         z, x, y = tid
-        logger.debug(f"Downloading tile at z={z}, x={x}, y={y}")
+        logger.info(f"Downloading tile at z={z}, x={x}, y={y}")
+        logger.info(f"{req_params}")
+
+        missing = [k for k in required if k not in req_params.keys()]
+
+        if missing:
+            err = (
+                f"WmsTileDownloader missing required parameters: {', '.join(missing)}."
+            )
+            raise ValueError(err)
+
+        tu = "https://basemap.nationalmap.gov/arcgis/services/USGSTopo/MapServer/WMSServer?request=GetCapabilities&service=WMS?service=WMS&request=GetMap&version=1.1.1&styles=default&format=image%2Fpng&scheme=wmts&transparent=True&layers=0&width=256&height=256&srs=EPSG%3A3857&bbox=-20037508.342789244,-7.081154551613622e-10,-10018754.171394622,10018754.171394618"
+        url = self.metadata["tile_url"]
+        # if z == 2 and x == 0 and y == 1:
+        logger.warning(tid)
+        logger.info(f"url: {url}")
+        logger.info(f"t_url: {tu}")
+
+        return super().download_tile(
+            url, tid, params_extra=req_params
+        )  # , fields_extras=fe)
 
 
 @define

@@ -10,7 +10,8 @@ from attrs.exceptions import FrozenInstanceError
 sys.path.append(os.getcwd())
 
 import PIL.Image as Img
-from static_maps.tiles import Bbox, Tile, TileID, TileStorage
+from static_maps.tiles import Tile, TileID, TileStorage
+from static_maps.geo import BBox
 
 
 def create_blank_image(size=256, mode="RGB"):
@@ -199,7 +200,7 @@ class TestTile:
         [
             (
                 Tile(TileID(4, 10, 9), img_data=bytes()),
-                Bbox(
+                BBox(
                     left=45.0,
                     bottom=-40.97989806962013,
                     right=67.5,
