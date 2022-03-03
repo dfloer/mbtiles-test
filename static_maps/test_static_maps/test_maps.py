@@ -78,15 +78,37 @@ class TestSlippyMapLayer:
         [
             (
                 (-180, -85, 180, 85),
-                [0, 2, 4],
+                [0, 1, 2],
                 "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                 False,
-                273,  # 4**0 + 4**2 + 4**4
+                21,  # 4**0 + 4**1 + 4**1
             ),
         ],
     )
     def test_download_tiles(self, bbox, zl, url, lazy, tile_count):
         layer = SlippyMapLayer(bbox=bbox, zoom_levels=zl, url=url, lazy=lazy, fmt="png")
+        tiles, meta = layer.get_tiles()
+        assert len(layer) == tile_count
+        assert len(tiles) == tile_count
+        assert meta
+
+
+class TestWmsLayer:
+    @pytest.mark.vcr("new")
+    @pytest.mark.parametrize(
+        "bbox, zl, url, lazy, tile_count",
+        [
+            (
+                (28.402123, -178.334698, 18.910361, -154.806773),
+                [0, 1, 2, 3],
+                "https://basemap.nationalmap.gov/arcgis/services/USGSTopo/MapServer/WMSServer?request=GetCapabilities&service=WMS",
+                False,
+                43,
+            ),
+        ],
+    )
+    def test_metadata_get(self, bbox, zl, url, lazy, tile_count):
+        layer = WmsMapLayer(bbox=bbox, zoom_levels=zl, url=url, lazy=lazy, fmt="jpeg")
         tiles, meta = layer.get_tiles()
         assert len(layer) == tile_count
         assert len(tiles) == tile_count
@@ -100,10 +122,10 @@ class TestCreateMap:
         [
             (
                 (-180, -85, 180, 85),
-                [0, 2, 4],
+                [0, 1, 2],
                 "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                 False,
-                273,
+                21,
             ),
         ],
     )
@@ -116,26 +138,3 @@ class TestCreateMap:
         assert len(tiles) == tile_count
         assert len(smap.layers) == len(smap.layers_meta)
         assert meta
-
-
-class TestWmsLayer:
-    @pytest.mark.skip(reason="Test needs work.")
-    @pytest.mark.vcr("new")
-    @pytest.mark.parametrize(
-        "bbox, zl, url, lazy, tile_count",
-        [
-            (
-                (-180, -85, 180, 85),
-                [0, 2, 4],
-                "https://basemap.nationalmap.gov/arcgis/services/USGSTopo/MapServer/WMSServer?request=GetCapabilities&service=WMS",
-                False,
-                273,
-            ),
-        ],
-    )
-    def test_metadata_get(self, bbox, zl, url, lazy, tile_count):
-        bmap = BaseMap()
-        layer = WmsMapLayer(bbox=bbox, zoom_levels=zl, url=url, lazy=lazy)
-        # layer.get_metadata()
-        # print(layer.metadata)
-        assert False

@@ -173,7 +173,6 @@ class Tile:
 
 
 def get_tile_ids(bbox, zooms):
-    logger.debug(f"bbox: {bbox}, zooms: {zooms}")
     tiles = {
         z: [TileID(a.z, a.x, a.y) for a in mercantile.tiles(*bbox, z)] for z in zooms
     }
@@ -212,6 +211,17 @@ def tile_path(tile: Tile, short_ext: bool = True, base_path: Path = Path(".")):
     return fp / fn
 
 
+image_types = {
+    "png": True,
+    "jpg": False,
+    "jpeg": False,
+    "bmp": False,
+    "webp": True,
+    "tiff": True,
+    "gif": True,
+}
+
+
 @define
 class Downloader:
     url: str = ""
@@ -221,6 +231,7 @@ class Downloader:
     requests: Any = stock_requests
     retries: int = 5
     backoff_time: int = 1
+    image_types: dict[str, str] = field(init=False, default=image_types)
 
     def download_tile(self, tid: TileID) -> Tile:
         raise NotImplementedError
@@ -263,12 +274,24 @@ class Downloader:
         params = self._extra_override("params", params_override, params_extra)
         fields = self._extra_override("fields", fields_override, fields_extra)
         headers = self._extra_override("headers", headers_override, headers_extra)
-        logger.debug(f"Final: p: {params}, f: {fields}, h: {headers}")
         final_url = url.format(**fields)
         backoff_time = self.backoff_time
         for tries in range(self.retries):
             try:
                 resp = self.requests.get(final_url, headers=headers, params=params)
+                logger.debug(f"final url: {resp.url}")
+                rh_ct = resp.headers["Content-Type"]
+                pf = params.get("format", fields.get("fmt", ""))
+                if pf not in rh_ct and pf not in self.image_types:
+                    err = f"Content-Type: {rh_ct} is not requested format: {pf}"
+                    try:
+                        raw_data = resp.content.decode("utf-8")
+                    except UnicodeDecodeError:
+                        raw_data = "".join(
+                            ["\\x" + "{:02x}".format(i) for i in resp.content]
+                        )
+                    logger.error(f"\n\n{raw_data}")
+                    raise self.DownloadError(err)
                 if resp.status_code == 200:
                     return resp.content
                 elif resp.status_code in acceptable_status:
@@ -359,7 +382,7 @@ class WmsTileDownloader(TileDownloader):
 
     def download_metadata(self, url: str) -> Any:
         """Convenience function."""
-        return self.download(url)
+        return self.download(url, params_extra={"format": "xml"})
 
     def download_tile(self, tid: TileID) -> Tile:
         # These are static* (*make sure are actually static).
@@ -373,19 +396,21 @@ class WmsTileDownloader(TileDownloader):
         default_params = {
             "version": "1.1.1",
             "styles": "default",
-            "format": "image/jpeg",
+            "format": "jpeg",
             "scheme": "wmts",
-            "transparent": True,
+            "transparent": False,
             "layers": 0,
         }
-        req_params = self.params
 
+        req_params = self.params
+        req_params.update(get_params)
         req_params["width"] = self.tile_width
         req_params["height"] = self.tile_height
-
-        req_params.update(get_params)
         defaults_set = {k: req_params.get(k, v) for k, v in default_params.items()}
         req_params.update(defaults_set)
+        req_params["transparent"] = self.image_types.get(
+            req_params["format"].lower(), False
+        )
 
         # Should these be included as defaults? Probably not, these should be added somewhere higher.
         required = ["bbox", "width", "height"]
@@ -395,22 +420,16 @@ class WmsTileDownloader(TileDownloader):
             crs_name = "srs"
         required += [crs_name]
 
-        xy_bbox1 = tid_to_xy_bbox(tid)
-        if req_params["scheme"] == "wmts":
-            logger.debug("WMTS: swapping tid scheme.")
-            tid = tid._swap_scheme()
-
         # Feels like the correct way to do this would be to pass an empty Tile to the downloader, in hindsight.
         xy_bbox = tid_to_xy_bbox(tid)
-        logger.info(xy_bbox)
-        logger.info(xy_bbox1)
+        logger.debug(xy_bbox)
 
-        req_params["bbox"] = xy_bbox
+        req_params["bbox"] = xy_bbox.wms_str()
         req_params["srs"] = xy_bbox.crs
 
         z, x, y = tid
-        logger.info(f"Downloading tile at z={z}, x={x}, y={y}")
-        logger.info(f"{req_params}")
+        logger.debug(f"Downloading tile at z={z}, x={x}, y={y}")
+        logger.debug(f"{req_params}")
 
         missing = [k for k in required if k not in req_params.keys()]
 
@@ -418,18 +437,11 @@ class WmsTileDownloader(TileDownloader):
             err = (
                 f"WmsTileDownloader missing required parameters: {', '.join(missing)}."
             )
+
             raise ValueError(err)
 
-        tu = "https://basemap.nationalmap.gov/arcgis/services/USGSTopo/MapServer/WMSServer?request=GetCapabilities&service=WMS?service=WMS&request=GetMap&version=1.1.1&styles=default&format=image%2Fpng&scheme=wmts&transparent=True&layers=0&width=256&height=256&srs=EPSG%3A3857&bbox=-20037508.342789244,-7.081154551613622e-10,-10018754.171394622,10018754.171394618"
         url = self.metadata["tile_url"]
-        # if z == 2 and x == 0 and y == 1:
-        logger.warning(tid)
-        logger.info(f"url: {url}")
-        logger.info(f"t_url: {tu}")
-
-        return super().download_tile(
-            url, tid, params_extra=req_params
-        )  # , fields_extras=fe)
+        return super().download_tile(final_url=url, params_extra=req_params)
 
 
 @define
@@ -483,7 +495,7 @@ class TileStorage:
                 with open(g[0], "rb") as f:
                     img_data = f.read()
                 t = Tile(tile_id, img_data)
-                logger.debug(f"Storage: {tile_id} in {self.name}. Tile: {t}.")
+                logger.debug(f"Storage: {tile_id} in {self.name}.")
                 return t
             else:
                 return None  # Raise exception?

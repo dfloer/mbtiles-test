@@ -7,6 +7,7 @@ from loguru import logger
 from mbtiles import create_mbtiles, mbt_metadata
 from static_maps.tiles import estimate_tiles, get_tile_ids
 from static_maps.maps import simple_map
+from static_maps.geo import LatLonBBox
 
 
 def parse_command_line():
@@ -42,8 +43,8 @@ def parse_command_line():
         "-b",
         "--bbox",
         dest="bbox",
-        help="Bounding box to cover.",
-        metavar=("WEST", "SOUTH", "EAST", "NORTH"),
+        help="Bounding box to cover, lat/lon ordering.",
+        metavar=("NORTH", "WEST", "SOUTH", "EAST"),
         required=True,
         nargs=4,
         type=float,
@@ -97,8 +98,11 @@ if __name__ == "__main__":
     cd = Path("./cache_test")
     # cd = None
 
-    print(f"Estimated tile count: {estimate_tiles(bbox, zoom_levels)}.")
+    t, l, b, r = bbox
+    et = estimate_tiles((l, b, r, t), zoom_levels)
+    bbx = ", ".join([str(round(x, 3)) for x in (t, l, r, b)])
+    print(f"Downloading ~{et} tiles with bounds ({bbx}) at zoom levels {zoom_levels}.")
 
-    tile_files, tiles_meta = simple_map(bbox, zoom_levels, url, td, cd)
-    metadata = mbt_metadata(other_data=tiles_meta, bounds=bbox)
+    tile_files, tiles_meta = simple_map((l, b, r, t), zoom_levels, url, td, cd)
+    metadata = mbt_metadata(other_data=tiles_meta, bounds=(t, r, b, l))
     create_mbtiles(tile_files, metadata, output_path=output)

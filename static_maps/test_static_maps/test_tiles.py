@@ -236,7 +236,6 @@ class TestTile:
     )
     def test_tile_props(self, prop, val, exp):
         test_tile = Tile(TileID(1, 2, 3), img_data=bytes())
-        print(test_tile, type(test_tile))
         if val is self.EMPTY:
             res = getattr(test_tile, prop)
             assert res == exp
@@ -274,7 +273,6 @@ class TestTileStorage:
 
     def test_noargs_local(self):
         tf = TileStorage("local")
-        print(tf)
         assert tf.base_path == None
         assert tf.path_name == Path(".")
         assert tf.full_path == Path(".")

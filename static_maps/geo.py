@@ -223,7 +223,7 @@ class BBoxBase:
 
 @define
 class BBox(BBoxBase):
-    _aliases: dict = field(init=False, default=None)
+    _aliases: dict = field(init=False, default=None, repr=False)
     # crs: str = field(default="", validator=instance_of(str))  # ToDo: CRS should be here, not the base class.
     """
     This is a bit weird looking, but the goal is to be able to just drop arbitrary bad input on a BBox, and have it (try to) make something reasonable out of it.
@@ -329,6 +329,12 @@ class LatLonBBox(BBox):
     def __iter__(self) -> Iterable[Tuple[int, int, int, int]]:
         return iter((self.top, self.left, self.bottom, self.right))
 
+    def __str__(self) -> str:
+        dirs = ["north", "west", "south", "east"]
+        vals = [self.top, self.left, self.bottom, self.right]
+        dir_vals = ", ".join([f"{n}={v}" for n, v in zip(dirs, vals)])
+        return f"LatLonBBox({dir_vals}, crs={self.crs})"
+
 
 @frozen
 class xyBBox(BBox):
@@ -346,7 +352,7 @@ class xyBBox(BBox):
     point_type: xyPoint = field(default=xyPoint, init=False, repr=False)
 
     def wms_str(self):
-        return f"{self.top},{self.left},{self.bottom},{self.right}"
+        return f"{self.left},{self.bottom},{self.right},{self.top}"
 
 
 @define

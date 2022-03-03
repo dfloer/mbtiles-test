@@ -150,6 +150,7 @@ class MapLayer:
             None: If an mbtiles file is written, nothing is returned.
             Fixme: ----> Tuple[Path, dict[int, TileID]]: If a temp_dir is set, this will be the path to the downloaded tiles there. Also included are the tile_ids
         """
+        logger.info("Starting tile download...")
         output_meta = {}
         tile_ids = get_tile_ids(self.bbox, self.zoom_levels)
         t = list(tile_ids.values())
@@ -172,17 +173,25 @@ class MapLayer:
 
         logger.debug(f"file_storage={self._storage}")
 
+        total_tiles = sum([len(list(x)) for x in tile_ids.values()])
+        # Print progress, at least every 10 tiles, but at most every 50.
+        ts = max(10, min(50, total_tiles // 10))
+        idx = 0
         for _, tiles in tile_ids.items():
             for tile in tiles:
+                idx += 1
                 t = self.tile_downloader.download_or_local(tile, self._storage)
                 if t is None:
                     continue
                 k = tile_path(t, base_path=self._storage.full_path)
                 self._tiles[k] = t
+                if idx % ts == 0:
+                    print(f"Downloaded: {idx}/{total_tiles} tiles.")
         # ToDo: tile_paths has all of the tiles in it. This is a recipe to run out of memory.
 
         # if self._storage.name == "local_storage":
         #     raise NotImplementedError("In memory storage of tiles not supported.")
+        logger.info("Finished tile download.")
         return self._tiles, output_meta
 
     def __len__(self):
@@ -209,7 +218,7 @@ class WmsMapLayer(MapLayer):
     def get_metadata(self):
         metadata = self.tile_downloader.download_metadata(url=self.url)
         assert metadata, "Metadata download failed, or blank response."
-        logger.info(f"size: {len(metadata)}")
+        logger.debug(f"metadate size: {len(metadata)}B.")
         meta = BeautifulSoup(metadata, features="xml")
         lookups = {
             "MaxHeight": int,
@@ -234,10 +243,9 @@ class WmsMapLayer(MapLayer):
                     a, b = lu
                     r = [tr(x.text) for x in meta.find(a).select(b)]
                     res[b] = r if len(r) > 1 else r[0]
-                elif len(lu) >= 3:
+                elif len(lu) >= 3:  # Todo: test this.
                     a, b, c = lu
                     abc = meta.find(a).select(c)
-                    logger.debug(abc)
                     r = [tr(x) for x in abc]
                     res[c] = r if len(r) > 1 else r[0]
             except AttributeError as e:
@@ -280,11 +288,9 @@ class WmsMapLayer(MapLayer):
         """
         For tags without attrs, parses them
         """
-        logger.debug(f"type(m): {type(m)}")
         if isinstance(m, element.Tag):
             r = m.attrs
         else:
             a = [x.attrs for x in m]
             r = [x.text for x in m] if a == [{}] * len(m) else a
-        logger.debug(f"m: {m} -> {r}")
         return r

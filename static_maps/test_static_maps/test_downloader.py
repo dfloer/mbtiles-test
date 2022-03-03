@@ -45,6 +45,7 @@ class TestTileDownloader:
             td = TileDownloader(
                 url, params, fields, headers, requests, retries, backoff_time, tile_size
             )
+            print(td)
             assert td.url == url
             assert td.params == params
             assert td.fields == fields
