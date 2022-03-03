@@ -336,7 +336,8 @@ class TileDownloader(Downloader):
                 res = self.download_tile(tid)
                 if res is None:
                     return None
-                t = Tile(tid, res)
+                # This is probably hiding a bug.
+                t = res if isinstance(res, Tile) else Tile(tid, res)
                 folder.add_tile(t)
         return t
 
@@ -368,7 +369,8 @@ class SlippyTileDownloader(TileDownloader):
             return None
 
         # Preserve the default Tile format, rather than guess.
-        f = self.fields.get("fmt", None)
+        image_fmt_guess = [x in self.url for x in image_types.keys()]
+        f = self.fields.get("fmt", image_fmt_guess[0])
         fmt = {"fmt": f} if f is not None else {}
         return Tile(tid=tid, img_data=resp, **fmt)
 
