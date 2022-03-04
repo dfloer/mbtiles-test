@@ -210,7 +210,7 @@ class MapLayer:
 
         url_pieces = urlparse(self.base_url)
 
-        output_meta["map_source"] = url_pieces.netloc
+        output_meta["_map_source"] = url_pieces.netloc
         output_meta["format"] = self.fmt
         path_name = Path(url_pieces.netloc.replace(".", "_"))
 
@@ -239,7 +239,7 @@ class MapLayer:
                 k = tile_path(t, base_path=self._storage.full_path)
                 self._tiles[k] = t
                 if idx % ts == 0:
-                    print(f"Downloaded: {idx}/{total_tiles} tiles.")
+                    logger.info(f"Downloaded: {idx}/{total_tiles} tiles.")
         # ToDo: tile_paths has all of the tiles in it. This is a recipe to run out of memory.
 
         # if self._storage.name == "local_storage":

@@ -240,7 +240,7 @@ class TestWmsLayer:
 
 
 class TestCreateMap:
-    # @pytest.mark.vcr("new")
+    @pytest.mark.vcr("new")
     @pytest.mark.parametrize(
         "test_input",
         [
@@ -283,7 +283,7 @@ class TestCreateMap:
         for idx, (k, v) in enumerate(res.items()):
             assert v["idx"] == idx
             assert len(v["tiles"]) == test_input[k]["exp_count"]
-            assert v["meta"]["map_source"] in test_input[k]["url"]
+            assert v["meta"]["_map_source"] in test_input[k]["url"]
             assert v["meta"]["format"] == test_input[k]["fmt"]
             assert isinstance(v["res"], test_input[k]["tile_dl"])
 

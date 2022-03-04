@@ -4,10 +4,10 @@ from pathlib import Path
 
 from loguru import logger
 
-from mbtiles import create_mbtiles, mbt_metadata
+from mbtiles import MBTiles
 from static_maps.tiles import estimate_tiles, get_tile_ids
 from static_maps.maps import simple_map
-from static_maps.geo import LatLonBBox
+from utils import setup_logging
 
 
 def parse_command_line():
@@ -86,12 +86,7 @@ if __name__ == "__main__":
     zoom_levels = options.zoom_levels
     debug = options.debug
 
-    if debug:
-        logger.remove()
-        logger.add(sys.stderr, level="DEBUG")
-    else:
-        logger.remove()
-        logger.add(sys.stderr, level="INFO")
+    setup_logging(debug=debug)
 
     # td = Path("./temp_test")
     td = None
@@ -101,8 +96,11 @@ if __name__ == "__main__":
     t, l, b, r = bbox
     et = estimate_tiles((l, b, r, t), zoom_levels)
     bbx = ", ".join([str(round(x, 3)) for x in (t, l, r, b)])
-    print(f"Downloading ~{et} tiles with bounds ({bbx}) at zoom levels {zoom_levels}.")
+    logger.info(
+        f"Downloading ~{et} tiles with bounds ({bbx}) at zoom levels {zoom_levels}."
+    )
 
     tile_files, tiles_meta = simple_map((l, b, r, t), zoom_levels, url, td, cd)
-    metadata = mbt_metadata(other_data=tiles_meta, bounds=(t, r, b, l))
-    create_mbtiles(tile_files, metadata, output_path=output)
+    mbt = MBTiles()
+    metadata = mbt.mbt_metadata(other_data=tiles_meta, bounds=(l, b, r, t))
+    mbt.create_mbtiles_file(tile_files, metadata, output_path=output)

@@ -335,6 +335,24 @@ class LatLonBBox(BBox):
         dir_vals = ", ".join([f"{n}={v}" for n, v in zip(dirs, vals)])
         return f"LatLonBBox({dir_vals}, crs={self.crs})"
 
+    @classmethod
+    def from_wgs84_order(cls, *args: Union[str, list, tuple]) -> "LatLonBBox":
+        if isinstance(args, str):
+            args = [float(x) for x in args.split(",")]
+        if isinstance(args, (list, tuple)) and len(args) == 4:
+            args = (args[3], args[0], args[1], args[2])
+        ll_bbox = LatLonBBox(*args)
+        if tuple([*args]) != tuple(ll_bbox):
+            in_bb = f"({', '.join([str(x) for x in args])})"
+            logger.error(f"{in_bb} != {tuple(ll_bbox)}")
+            msg = f"input maybe not in WGS94 ordering (left, bottom, right, top)"
+            raise ValueError(msg)
+        return ll_bbox
+
+    @property
+    def wgs84_order(self) -> tuple[float, float, float, float]:
+        return self.left, self.bottom, self.right, self.top
+
 
 @frozen
 class xyBBox(BBox):
