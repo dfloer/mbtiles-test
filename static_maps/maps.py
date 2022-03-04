@@ -1,13 +1,13 @@
 from collections import namedtuple
+from multiprocessing.sharedctypes import Value
 from pathlib import Path
 from pprint import pprint
-from typing import Iterable, Tuple, Union
+from typing import Iterable, Tuple, Union, Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
 from attr import field
 from attrs import Factory, define, field, validators
-from bs4 import BeautifulSoup, element
 from loguru import logger
 
 from static_maps.tiles import (
@@ -41,35 +41,84 @@ def simple_map(
         wms_layer = WmsMapLayer(
             bbox=bbox,
             zoom_levels=zoom_levels,
-            url=url,
+            base_url=url,
             temp_path=temp_path,
             cache_path=cache_path,
         )
-        layer = map.add_layer(wms_layer)
+        _, layer = map.add_layer(wms_layer)
         return layer.get_tiles(headers=headers, fields=fields, **params)
     else:
         map = BaseMap()
         slippy_layer = SlippyMapLayer(
             bbox=bbox,
             zoom_levels=zoom_levels,
-            url=url,
+            base_url=url,
             temp_path=temp_path,
             cache_path=cache_path,
         )
-        layer = map.add_layer(slippy_layer)
+        _, layer = map.add_layer(slippy_layer)
         return layer.get_tiles(headers=headers, fields=fields, **params)
 
 
 @define
 class BaseMap:
-    layers: list = Factory(list)
-    layers_meta: dict = Factory(dict)
+    name: str = "BaseMap"
+    layers: list = field(default=Factory(list), init=False, repr=False)
+    layers_meta: dict = field(default=Factory(dict), init=False, repr=False)
 
-    def add_layer(self, layer: "MapLayer") -> "MapLayer":
+    def add_layer(
+        self, layer: "MapLayer", z_idx: int = None, tr: float = 0.0
+    ) -> Tuple[int, "MapLayer"]:
+        """
+        Add a layer to the map.
+        Args:
+            layer (MapLayer): Actual layer object to add.
+            z_idx (int, optional): z-index of the layer (for compositing). If None, generate by insert order. Defaults to None.
+            tr (float, optional): transparency. 0=opaque, 100=invisible. Defaults to 0.
+        Returns:
+            Tuple[int, MapLayer]: (The layer index of the new layer, the actual layer object)
+        """
         self.layers += [layer]
         lidx = len(self.layers) - 1
-        self.layers_meta[lidx] = {"uuid": str(uuid4())}
-        return self.layers[lidx]
+        if z_idx is None:
+            z_idx = self.z_max + 1
+        if not self._check_z_idx(z_idx):
+            raise ValueError("Layer insertion failed.")
+        self.layers_meta[lidx] = {"z_idx": z_idx, "tr": tr}
+        return lidx, self.layers[lidx]
+
+    def _check_z_idx(self, new_z: int) -> bool:
+        try:
+            l = self.z_idxs.index(new_z)
+        except ValueError:
+            return True
+        err = f"z-index: {new_z} already assigned to layer {l}"
+        raise ValueError(err)
+
+    def get_layer(self, idx: int) -> "MapLayer":
+        return self._lookup_wrapper(self.layers, idx, "layers")
+
+    def get_layer_meta(self, idx: int) -> dict[str, Any]:
+        return self._lookup_wrapper(self.layers_meta, idx, "layers metadata")
+
+    def _lookup_wrapper(self, l: Union[list, dict], i: Any, n: str) -> Union[Any, None]:
+        try:
+            msg = f"map {n} does not contain {i}"
+            return l[i]
+        except IndexError:
+            raise IndexError(msg)
+        except KeyError:
+            raise KeyError(msg)
+
+    @property
+    def z_idxs(self) -> list[int]:
+        return [a["z_idx"] for a in self.layers_meta.values()]
+
+    @property
+    def z_max(self) -> int:
+        if not self.z_idxs:
+            return -1
+        return max(self.z_idxs)
 
     def __len__(self):
         return len(self.layers)
@@ -79,7 +128,7 @@ class BaseMap:
 class MapLayer:
     bbox: BboxT
     zoom_levels: list = field(validator=validators.instance_of(list))
-    url: str
+    base_url: str
     tile_downloader: TileDownloader = TileDownloader()
     temp_path: Path = None
     cache_path: Path = None
@@ -89,8 +138,13 @@ class MapLayer:
     _storage: TileStorage = None
     fmt: str = "jpeg"
     lazy: bool = True
-    name: str = "maplayer"
+    name: str = ""
     scheme: str = "xyz"
+    tile_size: int = 256
+
+    def __attrs_post_init__(self):
+        if not self.name:
+            self.name = self.__class__.__name__
 
     @zoom_levels.validator
     def zoom_bounds(self, _, zoom_levels):
@@ -130,7 +184,7 @@ class MapLayer:
         **params: dict,
     ) -> Union[None, Tuple[Path, dict[int, list[int, int, str]]]]:
         """
-        Gets the tiles for a bbox from the given url, at the specified zoom levels.
+        Gets the tiles for a bbox from this layer's url, at the specified zoom levels.
 
         Note that only one of temp_path and cache_path should be set.
 
@@ -138,7 +192,6 @@ class MapLayer:
         The parameters z, x, y, and fmt already exist in the TileID object, and fmt is an argument for this function.
         This means that fields would need to be {"api_ver": api_version, "style": map_style, "crs" = coordindate_reference_system}
         Args:
-            url (str): Url of the slippy mays server. Any parameters in {} will be filled in as needed, from the Tile or from the fields attribute.
             bbox (BboxT): Bounding box of the area to get tiles for.
             headers (dict, optional): Optional HTTP headers to pass to requests, for exmaple an "X-Api-Key" header for an API key. Defaults to {}.
             fields (dict, optional): Optional fields to fill in the url with. Defaults to {}.
@@ -155,7 +208,7 @@ class MapLayer:
         tile_ids = get_tile_ids(self.bbox, self.zoom_levels)
         t = list(tile_ids.values())
 
-        url_pieces = urlparse(self.url)
+        url_pieces = urlparse(self.base_url)
 
         output_meta["map_source"] = url_pieces.netloc
         output_meta["format"] = self.fmt
@@ -166,7 +219,7 @@ class MapLayer:
         logger.debug(path_name)
         fields["fmt"] = self.fmt
 
-        self.tile_downloader.url = self.url
+        self.tile_downloader.url = self.base_url
         self.tile_downloader.fields = fields
         self.tile_downloader.headers = headers
         self.tile_downloader.params = params
@@ -198,6 +251,15 @@ class MapLayer:
         return len(self._tiles)
 
 
+class AuthMissingError(Exception):
+    def __init__(self, msg: str = "", name: str = "") -> None:
+        if not msg:
+            msg = f"Missing auth for maplayer"
+        if name:
+            msg += f": {name}"
+        super().__init__(msg)
+
+
 @define
 class SlippyMapLayer(MapLayer):
     _allowed_schemes = ("xyz", "tms")
@@ -208,89 +270,28 @@ class SlippyMapLayer(MapLayer):
 class WmsMapLayer(MapLayer):
     _allowed_schemes = "wms"
     tile_downloader: TileDownloader = WmsTileDownloader()
-    tile_url: str = ""
-    _full_metadata: dict = Factory(dict)
-    metadata: dict = Factory(dict)
+    full_metadata: dict = field(default=Factory(dict), init=False)
 
     def __attrs_post_init__(self):
-        self.get_metadata()
+        self.tile_downloader.tile_width = self.tile_size
+        self.tile_downloader.tile_height = self.tile_size
+        self.tile_downloader.meta_url = self.base_url
+        self.full_metadata = self.tile_downloader.get_metadata()
 
-    def get_metadata(self):
-        metadata = self.tile_downloader.download_metadata(url=self.url)
-        assert metadata, "Metadata download failed, or blank response."
-        logger.debug(f"metadate size: {len(metadata)}B.")
-        meta = BeautifulSoup(metadata, features="xml")
-        lookups = {
-            "MaxHeight": int,
-            "MaxWidth": int,
-            ("GetMap", "Format"): str,
-            ("Style", "Name"): str,
-            "CRS": self.parse_generic_meta,
-            "BoundingBox": self.parse_bbox_meta,
-            "Title": self.parse_generic_meta,
-            ("GetMap", "DCPType", "OnlineResource"): self.parse_generic_meta,
-        }
-        res = {}
-        for lu, tr in lookups.items():
-            try:
-                if isinstance(lu, str):
-                    mfa = meta.find_all(lu)
-                    if len(mfa) == 1:
-                        res[lu] = tr(mfa[0].text)
-                    else:
-                        res[lu] = tr(mfa)
-                elif len(lu) == 2:
-                    a, b = lu
-                    r = [tr(x.text) for x in meta.find(a).select(b)]
-                    res[b] = r if len(r) > 1 else r[0]
-                elif len(lu) >= 3:  # Todo: test this.
-                    a, b, c = lu
-                    abc = meta.find(a).select(c)
-                    r = [tr(x) for x in abc]
-                    res[c] = r if len(r) > 1 else r[0]
-            except AttributeError as e:
-                logger.warning(f"Failed to get {lu}.")
-                # res[lu] = None
-        self._full_metadata = res
 
-        nice_names = (
-            "max_height",
-            "max_width",
-            "formats",
-            "styles",
-            "crss",
-            "bboxes",
-            "titles",
-            "url",
-        )
-        for n, a in zip(nice_names, lookups.keys()):
-            k = a
-            if not isinstance(a, str):
-                k = a[-1]
-            r = res[k]
-            if n == "url":
-                r = res[k][[u for u in r if "href" in u][0]]
-                self.tile_url = r
-            else:
-                self.metadata[n] = r
+@define
+class MapBoxLayer(SlippyMapLayer):
+    api_key: str = ""
+    url: str = field(
+        init=False, default="https://api.mapbox.com/v4/{style}/{z}/{x}/{y}{hr}.{fmt}"
+    )
+    fmt: str = "jpg90"
+    style: str = "mapbox.satellite"
+    high_res: bool = True
 
-        # Need a better way to pass this to the downloader.
-        self.tile_downloader.metadata = {k: v for k, v in self.metadata.items()}
-        self.tile_downloader.metadata["tile_url"] = self.tile_url
-
-    def parse_bbox_meta(self, m: str) -> list[BBox]:
-        """
-        Parses the given metadata hunk and returns a list of BBoxs.
-        """
-        return [BBox(**b) for b in self.parse_generic_meta(m)]
-
-    def parse_generic_meta(self, m: str) -> list:
-        """
-        For tags without attrs, parses them
-        """
-        if isinstance(m, element.Tag):
-            r = m.attrs
-        else:
-            a = [x.attrs for x in m]
-            r = [x.text for x in m] if a == [{}] * len(m) else a
-        return r
+    def get_tiles(self) -> Union[None, Tuple[Path, dict[int, list[int, int, str]]]]:
+        if not self.api_key:
+            raise AuthMissingError(name=self.name)
+        hr = "@2x" if self.high_res else ""
+        fields = {"fmt": self.fmt, "style": self.style, "hr": hr}
+        return super().get_tiles(fields=fields)

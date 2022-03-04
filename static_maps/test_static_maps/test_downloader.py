@@ -71,7 +71,6 @@ class TestTileDownloader:
         td = SlippyTileDownloader(url, params, fields, headers)
         tiles = [td.download_tile(t) for t in tile_ids]
         # Make sure we got all tiles back.
-        print(tiles)
         assert all([isinstance(t, Tile) for t in tiles])
         # Make sure we got the same number of tiles as we were expecting.
         assert len(tiles) == len(tile_ids)

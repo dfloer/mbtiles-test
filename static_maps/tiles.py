@@ -10,7 +10,7 @@ import requests as stock_requests
 from attrs import Factory, define, field, validators
 from loguru import logger
 from PIL import Image
-from urllib.parse import urlencode
+from bs4 import BeautifulSoup, element
 
 BboxT = tuple[float, float, float, float]
 
@@ -231,9 +231,9 @@ class Downloader:
     requests: Any = stock_requests
     retries: int = 5
     backoff_time: int = 1
-    image_types: dict[str, str] = field(init=False, default=image_types)
+    image_types: dict[str, str] = field(init=False, default=image_types, repr=False)
 
-    def download_tile(self, tid: TileID) -> Tile:
+    def download_tile(self, *args, **kwargs) -> None:
         raise NotImplementedError
 
     class DownloadError(Exception):
@@ -243,7 +243,7 @@ class Downloader:
 
     def download(
         self,
-        url: str,
+        url: str = "",
         acceptable_status: list = list([]),
         params_override: dict = {},
         fields_override: dict = {},
@@ -271,6 +271,8 @@ class Downloader:
         Returns:
             requests.Response.content: Content of the response.
         """
+        if not url:
+            url = self.url
         params = self._extra_override("params", params_override, params_extra)
         fields = self._extra_override("fields", fields_override, fields_extra)
         headers = self._extra_override("headers", headers_override, headers_extra)
@@ -280,7 +282,8 @@ class Downloader:
             try:
                 resp = self.requests.get(final_url, headers=headers, params=params)
                 logger.debug(f"final url: {resp.url}")
-                rh_ct = resp.headers["Content-Type"]
+                # check if we got back the format we were expecting for the tile.
+                rh_ct = resp.headers["Content-Type"].lower()
                 pf = params.get("format", fields.get("fmt", ""))
                 if pf not in rh_ct and pf not in self.image_types:
                     err = f"Content-Type: {rh_ct} is not requested format: {pf}"
@@ -292,6 +295,7 @@ class Downloader:
                         )
                     logger.error(f"\n\n{raw_data}")
                     raise self.DownloadError(err)
+                # Check if status codes match, or are at least acceptable.
                 if resp.status_code == 200:
                     return resp.content
                 elif resp.status_code in acceptable_status:
@@ -336,18 +340,8 @@ class TileDownloader(Downloader):
                 res = self.download_tile(tid)
                 if res is None:
                     return None
-                # This is probably hiding a bug.
-                t = res if isinstance(res, Tile) else Tile(tid, res)
-                folder.add_tile(t)
-        return t
-
-    def download_tile(
-        self,
-        final_url: str,
-        acceptable_status: list = list([]),
-        **kwargs,
-    ):
-        return super().download(final_url, acceptable_status, **kwargs)
+                folder.add_tile(res)
+        return res
 
 
 @define
@@ -364,7 +358,7 @@ class SlippyTileDownloader(TileDownloader):
         z, x, y = tid
         logger.debug(f"Downloading tile at z={z}, x={x}, y={y}")
         fe = {"z": z, "x": x, "y": y}
-        resp = super().download_tile(self.url, fields_extra=fe)
+        resp = self.download(fields_extra=fe)
         if resp is None:
             return None
 
@@ -380,11 +374,110 @@ class WmsTileDownloader(TileDownloader):
     crs: str = "EPSG:3857"
     tile_width: int = 256
     tile_height: int = 256
-    metadata: dict = field(default=dict, init=False, repr=False)
+    meta_url: str = ""
+    meta_headers: dict = {}
+    meta_params: dict = {}
+    meta_fields: dict = {}
+    metadata: dict = field(default=Factory(dict), init=False)
 
-    def download_metadata(self, url: str) -> Any:
+    def download_metadata(self) -> Any:
         """Convenience function."""
-        return self.download(url, params_extra={"format": "xml"})
+        assert (
+            self.meta_url
+        ), "Error getting metadata: meta_url and url can't both blank"
+        self.meta_params["format"] = "xml"
+        return self.download(
+            url=self.meta_url,
+            params_override=self.meta_params,
+            fields_extra=self.meta_fields,
+            headers_override=self.meta_headers,
+        )
+
+    def get_metadata(self):
+        metadata = self.download_metadata()
+        assert metadata, "Metadata download failed, or blank response."
+        logger.debug(f"metadate size: {len(self.metadata)}B.")
+        meta = BeautifulSoup(metadata, features="xml")
+        lookups = {
+            "MaxHeight": int,
+            "MaxWidth": int,
+            ("GetMap", "Format"): str,
+            ("Style", "Name"): str,
+            "CRS": self.parse_generic_meta,
+            "BoundingBox": self.parse_bbox_meta,
+            "Title": self.parse_generic_meta,
+            ("GetMap", "DCPType", "OnlineResource"): self.parse_generic_meta,
+        }
+        res = self.parse_metadata(meta, lookups)
+
+        nice_names = (
+            "max_height",
+            "max_width",
+            "formats",
+            "styles",
+            "crss",
+            "bboxes",
+            "titles",
+            "url",
+        )
+        return self.clean_store_metadata(res, nice_names, lookups)
+
+    def clean_store_metadata(self, meta: dict, nice_names: dict, lookups: dict):
+        for n, a in zip(nice_names, lookups.keys()):
+            k = a
+            if not isinstance(a, str):
+                k = a[-1]
+            r = meta[k]
+            if n == "url":
+                r = meta[k][[u for u in r if "href" in u][0]]
+                tile_url = r
+            else:
+                self.metadata[n] = r
+        # Now that we know the actual tile url, store it.
+        self.url = tile_url
+        return {k: v for k, v in self.metadata.items()}
+
+    def parse_metadata(self, meta: dict, lookups: dict) -> dict:
+        """Given some metadata and some keys to look up, find that metadata"""
+        res = {}
+        for lu, tr in lookups.items():
+            try:
+                if isinstance(lu, str):
+                    mfa = meta.find_all(lu)
+                    if len(mfa) == 1:
+                        res[lu] = tr(mfa[0].text)
+                    else:
+                        res[lu] = tr(mfa)
+                elif len(lu) == 2:
+                    a, b = lu
+                    r = [tr(x.text) for x in meta.find(a).select(b)]
+                    res[b] = r if len(r) > 1 else r[0]
+                elif len(lu) >= 3:  # Todo: test this.
+                    a, b, c = lu
+                    abc = meta.find(a).select(c)
+                    r = [tr(x) for x in abc]
+                    res[c] = r if len(r) > 1 else r[0]
+            except AttributeError as e:
+                logger.warning(f"Failed to get {lu}.")
+                # res[lu] = None
+        return res
+
+    def parse_bbox_meta(self, m: str) -> list[BBox]:
+        """
+        Parses the given metadata hunk and returns a list of BBoxs.
+        """
+        return [BBox(**b) for b in self.parse_generic_meta(m)]
+
+    def parse_generic_meta(self, m: str) -> list:
+        """
+        For tags without attrs, parses them
+        """
+        if isinstance(m, element.Tag):
+            r = m.attrs
+        else:
+            a = [x.attrs for x in m]
+            r = [x.text for x in m] if a == [{}] * len(m) else a
+        return r
 
     def download_tile(self, tid: TileID) -> Tile:
         # These are static* (*make sure are actually static).
@@ -442,8 +535,10 @@ class WmsTileDownloader(TileDownloader):
 
             raise ValueError(err)
 
-        url = self.metadata["tile_url"]
-        return super().download_tile(final_url=url, params_extra=req_params)
+        url = self.url
+
+        tile_data = self.download(params_extra=req_params)
+        return Tile(tid, img_data=tile_data, fmt=req_params["format"])
 
 
 @define
