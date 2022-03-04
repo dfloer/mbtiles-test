@@ -336,12 +336,22 @@ class LatLonBBox(BBox):
         return f"LatLonBBox({dir_vals}, crs={self.crs})"
 
     @classmethod
+    def from_string(cls, s: str) -> "LatLonBBox":
+        res = [float(x) for x in s.split(",")]
+        return LatLonBBox(*res)
+
+    @classmethod
     def from_wgs84_order(cls, *args: Union[str, list, tuple]) -> "LatLonBBox":
-        if isinstance(args, str):
-            args = [float(x) for x in args.split(",")]
+        """Generates a LatLonBBox from a string, tuple or list in WGS84 ordering."""
+        if len(args) == 1:
+            if isinstance(args[0], str):
+                args = args[0].split(",")
+            else:
+                args = args[0]
         if isinstance(args, (list, tuple)) and len(args) == 4:
             args = (args[3], args[0], args[1], args[2])
-        ll_bbox = LatLonBBox(*args)
+        args = [float(x) for x in args]
+        ll_bbox = cls(*args)
         if tuple([*args]) != tuple(ll_bbox):
             in_bb = f"({', '.join([str(x) for x in args])})"
             logger.error(f"{in_bb} != {tuple(ll_bbox)}")

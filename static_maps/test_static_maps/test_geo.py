@@ -1,10 +1,10 @@
-from ast import Index
 import os
 import sys
 
 import pytest
 from loguru import logger
 from collections import namedtuple
+from itertools import permutations
 import mercantile
 
 logger.remove()
@@ -535,6 +535,92 @@ class TestLatLonBBox:
         assert ll_bbox.left == bbox[1]
         assert ll_bbox.bottom == bbox[2]
         assert ll_bbox.right == bbox[3]
+
+    def test_wgs84_order(self):
+        bbox = LatLonBBox(n=80.5, w=-178.8, s=-84.4, e=179.9)
+        res = bbox.wgs84_order
+        assert res == (-178.8, -84.4, 179.9, 80.5)
+
+    @pytest.mark.parametrize(
+        "in_bbox, exp",
+        [
+            (
+                (min_lon, min_lat, max_lon, max_lat),
+                (max_lat, min_lon, min_lat, max_lon),
+            ),
+            (
+                (f"{min_lon}, {min_lat}, {max_lon}, {max_lat}",),
+                (max_lat, min_lon, min_lat, max_lon),
+            ),
+            (
+                (f"{min_lon},{min_lat},{max_lon},{max_lat}",),
+                (max_lat, min_lon, min_lat, max_lon),
+            ),
+            (
+                ((min_lon, min_lat, max_lon, max_lat),),
+                (max_lat, min_lon, min_lat, max_lon),
+            ),
+            (
+                [
+                    (min_lon, min_lat, max_lon, max_lat),
+                ],
+                (max_lat, min_lon, min_lat, max_lon),
+            ),
+        ],
+    )
+    def test_from_wgs84_order(self, in_bbox, exp):
+        res = LatLonBBox.from_wgs84_order(*in_bbox)
+        assert res == LatLonBBox(*exp)
+
+    @pytest.mark.parametrize(
+        "s, exp",
+        [
+            (
+                f"{max_lat}, {min_lon}, {min_lat}, {max_lon}",
+                (max_lat, min_lon, min_lat, max_lon),
+            ),
+            (
+                f"{max_lat},{min_lon},{min_lat},{max_lon}",
+                (max_lat, min_lon, min_lat, max_lon),
+            ),
+        ],
+    )
+    def test_from_string(self, s, exp):
+        assert LatLonBBox.from_string(s) == LatLonBBox(*exp)
+
+    @pytest.mark.parametrize(
+        "in_bbox",
+        (
+            (max_lat, min_lon, min_lat, max_lon),
+            (max_lat, min_lon, max_lon, min_lat),
+            (max_lat, min_lat, min_lon, max_lon),
+            (max_lat, min_lat, max_lon, min_lon),
+            (max_lat, max_lon, min_lon, min_lat),
+            (max_lat, max_lon, min_lat, min_lon),
+            (min_lon, max_lat, min_lat, max_lon),
+            # (min_lon, max_lat, max_lon, min_lat),
+            (min_lon, min_lat, max_lat, max_lon),
+            # (min_lon, min_lat, max_lon, max_lat),
+            (min_lon, max_lon, max_lat, min_lat),
+            (min_lon, max_lon, min_lat, max_lat),
+            (min_lat, max_lat, min_lon, max_lon),
+            (min_lat, max_lat, max_lon, min_lon),
+            (min_lat, min_lon, max_lat, max_lon),
+            (min_lat, min_lon, max_lon, max_lat),
+            (min_lat, max_lon, max_lat, min_lon),
+            (min_lat, max_lon, min_lon, max_lat),
+            # (max_lon, max_lat, min_lon, min_lat),
+            (max_lon, max_lat, min_lat, min_lon),
+            (max_lon, min_lon, max_lat, min_lat),
+            (max_lon, min_lon, min_lat, max_lat),
+            (max_lon, min_lat, max_lat, min_lon),
+            # (max_lon, min_lat, min_lon, max_lat),
+        ),
+    )
+    def test_from_wgs84_order_fail(self, in_bbox):
+        print(in_bbox)
+        with pytest.raises(ValueError):
+            _ = LatLonBBox.from_wgs84_order(*in_bbox)
 
 
 class testxyBBox:

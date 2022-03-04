@@ -6,15 +6,26 @@ from loguru import logger
 from static_maps.geo import LatLonBBox
 from attrs import define, field, Factory
 from typing import Any
+from pprint import pprint
 
 # MB tiles version requirements.
-required_1_1 = ["name", "type", "version", "description", "format"]
-optional_1_1 = ["bounds"]
-required_1_2 = ["name", "type", "version", "description", "format"]
-optional_1_2 = ["bounds", "attribution"]
-required_1_3 = ["name", "format"]
-should_optional_1_3 = ["bounds", "center", "minzoom", "maxzoom"]
-may_optional_1_3 = ["attribution", "description", "type", "version"]
+meta_req_opt = {
+    "1.1": {
+        "required": ["name", "type", "version", "description", "format"],
+        "optional": ["bounds"],
+    },
+    "1.2": {
+        "required": ["name", "type", "version", "description", "format"],
+        "optional": ["bounds", "attribution"],
+    },
+    "1.3": {
+        "required": ["name", "format"],
+        "optional": {
+            "should": ["bounds", "center", "minzoom", "maxzoom"],
+            "may": ["attribution", "description", "type", "version"],
+        },
+    },
+}
 
 vers_val = lambda s, a, v: v[-1] in ("1", "2", "3")
 opt_val = lambda s, a, v: v in ("all", "none", "required", "optional", "should", "may")
@@ -25,27 +36,29 @@ class MBTiles:
     spec_version: str = field(default="1.1", validator=vers_val)
     spec_optional: str = field(default="all", validator=opt_val)
     extra_meta: bool = True
-    _meta_expected: list[str] = field(default=list, init=False, repr=False)
+    _meta_expected: list[str] = field(default=Factory(list), init=False, repr=False)
+    # If false, then "may" does not imply "should".
+    may_should: bool = field(default=True)
 
     def __attrs_post_init__(self):
-        # Parse the version to determine which metadata is expected to be present.
-        meta_exp = []
+        meta_exp = self._find_expected_keys()
+        self._meta_expected += meta_exp
+
+    def _find_expected_keys(self):
+        """
+        Find a list of keys we expect to have for a compliant metadata spec given a version.
+        """
         opts_1_12 = ["optional", "all", "should", "may"]
-        if self.spec_version == "1.1":
-            meta_exp += required_1_1
-            if self.spec_optional in opts_1_12:
-                meta_exp += optional_1_1
-        elif self.spec_version == "1.2":
-            meta_exp += required_1_2
-            if self.spec_optional in opts_1_12:
-                meta_exp += optional_1_2
-        elif self.spec_version == "1.3":
-            meta_exp += required_1_3
+        meta_exp = [x for x in meta_req_opt[self.spec_version]["required"]]
+        meta_opt = meta_req_opt[self.spec_version]["optional"]
+        if self.spec_optional in opts_1_12:
+            meta_exp += meta_opt
+        if self.spec_version == "1.3":
             if self.spec_optional in ["optional", "all", "may"]:
-                meta_exp += may_optional_1_3
-            if self.spec_optional in ["should"]:
-                meta_exp += should_optional_1_3
-        self._meta_expected = meta_exp
+                meta_exp += meta_opt["may"]
+            if self.spec_optional in ["should"] and not self.may_should:
+                meta_exp += meta_opt["should"]
+        return meta_exp
 
     def validate_metadata(self, metadata: dict) -> bool:
         """
@@ -131,6 +144,7 @@ class MBTiles:
         Creates the mbtiles metadata, including the "required" keys.
         Note that there are some extra values added, with an _ in front.
             This is controlled by setting self.extra_meta to True or False.
+        other data takes preceremce over kwargs values, with defaults last.
         Args:
             other_data (dict, optional): Extra metadata to include. Defaults to {}.
             kwargs: other keyword arguments to pass to creator.
@@ -139,15 +153,14 @@ class MBTiles:
         """
         logger.debug(f"{other_data}")
         logger.debug(f"{kwargs}")
-        meta = {k: v for k, v in other_data.items()}
-
+        meta = kwargs
+        meta.update(other_data)
         ll_bbox = None
-        if "bounds" in self._meta_expected:
+        if "bounds" in self._meta_expected or key in meta:
             bounds = get_from_two("bounds", other_data, kwargs, (-180.0, -85, 180, 85))
             ll_bbox = LatLonBBox.from_wgs84_order(*bounds)
             bounds = ",".join([str(x) for x in ll_bbox.wgs84_order])
             meta["bounds"] = bounds
-
         min_zoom = int(get_from_two("minzoom", other_data, kwargs, 0))
         max_zoom = int(get_from_two("maxzoom", other_data, kwargs, 22))
         df = f"0,0,{min_zoom}"
@@ -169,7 +182,7 @@ class MBTiles:
         }
 
         for key, default in to_include.items():
-            if key in self._meta_expected:
+            if key in self._meta_expected or key in meta:
                 td = type(default)
                 val = get_from_two(key, other_data, kwargs, default)
                 meta[key] = td(val)
